@@ -1,0 +1,4 @@
+venv/
+.env
+recordatorios.db
+__pycache__/
