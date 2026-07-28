@@ -8,6 +8,8 @@ from db import (
     obtener_pendientes,
     marcar_enviado,
     cancelar_recordatorio,
+    obtener_recordatorio_por_id,
+    actualizar_recordatorio
 )
 from date_parser import parsear_fecha_hora
 
@@ -35,8 +37,21 @@ ESPERANDO_TEXTO, ESPERANDO_FECHA, ESPERANDO_FRECUENCIA = range(3)
 # ---------- /start ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("¡Hola! Bienvenido al botfiu.")
+    await update.message.reply_text("¡Hola! Bienvenido al botfiu\n Ocupa /help para ver los comandos disponibles .")
 
+# ---------- /help ----------
+
+async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = (
+        "📋 *Comandos disponibles*\n\n"
+        "🔔 *Recordatorios*\n"
+        "/recordar — crear un recordatorio nuevo (te voy preguntando texto, fecha y frecuencia)\n"
+        "/recordatorios — ver tus recordatorios pendientes\n"
+        "/editar id — editar un recordatorio existente\n"
+        "/cancelar id — cancelar un recordatorio\n\n"
+        "ℹ️ /help — ver este mensaje"
+    )
+    await update.message.reply_text(texto, parse_mode="Markdown")
 
 # ---------- /recordar (conversación de varios pasos) ----------
 
@@ -94,13 +109,24 @@ async def recibir_frecuencia(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = update.effective_chat.id
     fecha_hora_texto = fecha_hora.strftime("%Y-%m-%d %H:%M:%S")
 
-    id_recordatorio = agregar_recordatorio(chat_id, texto, fecha_hora_texto, frecuencia)
-    programar_job(id_recordatorio, chat_id, texto, fecha_hora, frecuencia)
+    id_editando = context.user_data.get("editando_id")  # None si es creación nueva
 
-    await update.message.reply_text(
-        f"Listo, guardado ({frecuencia}): '{texto}' — {fecha_hora_texto}",
-        reply_markup=ReplyKeyboardRemove()
-    )
+    if id_editando:
+        actualizar_recordatorio(id_editando, texto, fecha_hora_texto, frecuencia)
+
+        try:
+            scheduler.remove_job(str(id_editando))
+        except Exception:
+            pass
+        programar_job(id_editando, chat_id, texto, fecha_hora, frecuencia)
+
+        mensaje = f"Recordatorio {id_editando} actualizado: '{texto}' — {fecha_hora_texto} ({frecuencia})"
+    else:
+        id_recordatorio = agregar_recordatorio(chat_id, texto, fecha_hora_texto, frecuencia)
+        programar_job(id_recordatorio, chat_id, texto, fecha_hora, frecuencia)
+        mensaje = f"Listo, guardado ({frecuencia}): '{texto}' — {fecha_hora_texto}"
+
+    await update.message.reply_text(mensaje, reply_markup=ReplyKeyboardRemove())
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -121,10 +147,20 @@ async def recordatorios_lista(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("No tienes recordatorios pendientes.")
         return
 
-    texto_final = "\n".join(
-        f"{fila[0]}. {fila[2]} — {fila[3]} ({fila[4]})" for fila in pendientes
-    )
-    await update.message.reply_text(texto_final)
+    lineas = []
+    for id_r, chat_id, texto, fecha_hora_texto, frecuencia in pendientes:
+        if frecuencia != "unica":
+            job = scheduler.get_job(str(id_r))
+            if job and job.next_run_time:
+                fecha_mostrar = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                fecha_mostrar = fecha_hora_texto
+        else:
+            fecha_mostrar = fecha_hora_texto
+
+        lineas.append(f"{id_r}. {texto} — {fecha_mostrar} ({frecuencia})")
+
+    await update.message.reply_text("\n".join(lineas))
 
 
 # ---------- Envío del aviso ----------
@@ -199,6 +235,31 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Recordatorio {id_recordatorio} cancelado.")
 
+# ---------- /actualizar ----------
+
+async def editar_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 1 or not context.args[0].isdigit():
+        await update.message.reply_text("Formato: /editar id\nEj: /editar 5")
+        return ConversationHandler.END
+
+    id_recordatorio = int(context.args[0])
+    recordatorio = obtener_recordatorio_por_id(id_recordatorio)
+
+    if recordatorio is None:
+        await update.message.reply_text("No encontré ese recordatorio (¿ya fue enviado o cancelado?).")
+        return ConversationHandler.END
+
+    chat_id_dueño = recordatorio[0]
+    if chat_id_dueño != update.effective_chat.id:
+
+        await update.message.reply_text("Ese recordatorio no existe.")
+        return ConversationHandler.END
+
+    context.user_data["editando_id"] = id_recordatorio
+
+    await update.message.reply_text("Editando recordatorio. ¿Cuál es el nuevo texto?")
+    return ESPERANDO_TEXTO
+
 
 # ---------- Recarga al iniciar el bot ----------
 
@@ -239,8 +300,20 @@ conversacion_recordar = ConversationHandler(
     fallbacks=[CommandHandler("cancelar_recordar", cancelar_conversacion)],
 )
 
+conversacion_editar = ConversationHandler(
+    entry_points=[CommandHandler("editar", editar_inicio)],
+    states={
+        ESPERANDO_TEXTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto)],
+        ESPERANDO_FECHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_fecha)],
+        ESPERANDO_FRECUENCIA: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_frecuencia)],
+    },
+    fallbacks=[CommandHandler("cancelar_recordar", cancelar_conversacion)],
+)
+
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("help", ayuda))
 app.add_handler(conversacion_recordar)
+app.add_handler(conversacion_editar)
 app.add_handler(CommandHandler("recordatorios", recordatorios_lista))
 app.add_handler(CommandHandler("cancelar", cancelar))
 

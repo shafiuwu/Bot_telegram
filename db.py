@@ -80,6 +80,34 @@ def cancelar_recordatorio(id_recordatorio):
     return filas_afectadas
 
 
+def obtener_recordatorio_por_id(id_recordatorio):
+    conexion = sqlite3.connect("recordatorios.db")
+    cursor = conexion.cursor()
+
+    cursor.execute(
+        "SELECT chat_id, texto, fecha_hora, frecuencia FROM recordatorios WHERE id = ? AND enviado = 0",
+        (id_recordatorio,)
+    )
+    fila = cursor.fetchone() 
+
+    conexion.close()
+    return fila
+
+
+def actualizar_recordatorio(id_recordatorio, texto, fecha_hora, frecuencia):
+    conexion = sqlite3.connect("recordatorios.db")
+    cursor = conexion.cursor()
+
+    cursor.execute(
+        "UPDATE recordatorios SET texto = ?, fecha_hora = ?, frecuencia = ? WHERE id = ?",
+        (texto, fecha_hora, frecuencia, id_recordatorio)
+    )
+
+    conexion.commit()
+    conexion.close()
+
+
+
 if __name__ == "__main__":
     crear_tabla()
     migrar_frecuencia()
